@@ -34,27 +34,31 @@ A polished Luau interface library for Roblox with resizable windows, tabs, form 
 Load the currently hosted build:
 
 ```lua
-local VindUI = loadstring(game:HttpGet("https://p.ip.fi/quda.txt"))()
+local VindUI = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/Skinny-yz/VVind-UI/refs/heads/main/src.lua"
+))()
 ```
 
-For GitHub, point the loader to your own raw source file:
+Official source:
 
 ```lua
 local VindUI = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/YOUR-USERNAME/YOUR-REPOSITORY/main/VindUIReborn.lua"
+    "https://raw.githubusercontent.com/Skinny-yz/VVind-UI/refs/heads/main/src.lua"
 ))()
 ```
 
 For local development:
 
 ```lua
-local VindUI = loadstring(readfile("VindUIReborn.lua"))()
+local VindUI = loadstring(readfile("src.lua"))()
 ```
 
 ## Quick start
 
 ```lua
-local VindUI = loadstring(game:HttpGet("https://p.ip.fi/quda.txt"))()
+local VindUI = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/Skinny-yz/VVind-UI/refs/heads/main/src.lua"
+))()
 
 local Window = VindUI:CreateWindow({
     Title = "Vind Ui Reborn",
@@ -957,13 +961,13 @@ Keep webhooks behind a private backend. Anyone can copy and abuse a webhook stor
 
 ## Complete example
 
-[`VindUIReborn.example.lua`](./VindUIReborn.example.lua) presents the library as a complete, organized script. It includes every standard component, tables, responsive grids, configuration management, dialogs, notifications, dock buttons, service panels, and a configurable assistant.
+[`example.lua`](https://github.com/Skinny-yz/VVind-UI/blob/main/example.lua) presents the library as a complete, organized script. It includes every standard component, tables, responsive grids, configuration management, dialogs, notifications, dock buttons, service panels, and a configurable assistant.
 
 Review its `CONFIG` block before running it:
 
 ```lua
 local CONFIG = {
-    SourceUrl = "https://p.ip.fi/quda.txt",
+    SourceUrl = "https://raw.githubusercontent.com/Skinny-yz/VVind-UI/refs/heads/main/src.lua",
     FeedbackWebhook = "",
     CloudBaseUrl = "",
     SpotifyBridgeUrl = "",
@@ -1026,15 +1030,15 @@ Check the provider `Endpoint`, `Model`, and authentication. Empty keys in the ex
 
 ### A removed legacy panel causes an error
 
-Update the hosted source to the latest `VindUIReborn.lua`. The current build safely ignores legacy `AddDefaultCreditsPanel()` calls and does not create a panel.
+Update to the latest [`src.lua`](https://github.com/Skinny-yz/VVind-UI/blob/main/src.lua). The current build safely ignores legacy `AddDefaultCreditsPanel()` calls and does not create a panel.
 
 ## Suggested repository structure
 
 ```text
 Vind-Ui-Reborn/
 ├── README.md
-├── VindUIReborn.lua
-└── VindUIReborn.example.lua
+├── src.lua
+└── example.lua
 ```
 
 Keep the library source separate from the showcase. This gives the loader a stable URL and lets users copy examples without editing the main file.
