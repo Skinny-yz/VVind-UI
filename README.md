@@ -1031,14 +1031,3 @@ Check the provider `Endpoint`, `Model`, and authentication. Empty keys in the ex
 ### A removed legacy panel causes an error
 
 Update to the latest [`src.lua`](https://github.com/Skinny-yz/VVind-UI/blob/main/src.lua). The current build safely ignores legacy `AddDefaultCreditsPanel()` calls and does not create a panel.
-
-## Suggested repository structure
-
-```text
-Vind-Ui-Reborn/
-├── README.md
-├── src.lua
-└── example.lua
-```
-
-Keep the library source separate from the showcase. This gives the loader a stable URL and lets users copy examples without editing the main file.
