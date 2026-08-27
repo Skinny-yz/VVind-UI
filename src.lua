@@ -1,5 +1,6 @@
 --! Vind ui by @s_e6 on discord (1374910219523723367)
 -- oi gusta, se vc ler isso, recomendo que vc mesmo crie sua propria ui lib e pare de depender de src vazada ou coisa antiga minha pra usar no seu script, bjs😘
+-- mesmo sendo uma ui publica (eu sei q se vc usar a ui vai argumentar sobre isso) vc consegue fazer algo melhor que aquela ui podre inspirada no alchemy hub
 local TweenService      = game:GetService("TweenService")
 local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
