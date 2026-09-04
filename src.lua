@@ -1,6 +1,4 @@
---! Vind ui by @s_e6 on discord (1374910219523723367)
--- oi gusta, se vc ler isso, recomendo que vc mesmo crie sua propria ui lib e pare de depender de src vazada ou coisa antiga minha pra usar no seu script, bjs😘
--- mesmo sendo uma ui publica (eu sei q se vc usar a ui vai argumentar sobre isso) vc consegue fazer algo melhor que aquela ui podre inspirada no alchemy hub
+-- vind ui by s_e6 on discord
 local TweenService      = game:GetService("TweenService")
 local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
@@ -17,7 +15,7 @@ local IsMobileDevice = UserInputService.TouchEnabled and not UserInputService.Mo
 
 local NullUI = {}
 NullUI.__index = NullUI
-NullUI.Version = "2.7.7"
+NullUI.Version = "2.8.1"
 NullUI.Flags = {}
 NullUI._Windows = {}
 
@@ -134,29 +132,25 @@ local function FormatNumber(v)
 	return string.format("%.4g", v)
 end
 
-local BLUR_NAME = "NullUI_Blur"
 local ACRYLIC_DOF_NAME = "NullUI_AcrylicDOF"
 local ACRYLIC_DISTANCE = 0.001
 local ACRYLIC_TRANSPARENCY = 0.98
-
-local BlurEffect = nil
 local AcrylicDOF = nil
 local AcrylicControllers = {}
-local BlurTarget = false
-local VisibleWindows = 0
-local SavedLightingBrightness = nil
-local SunSuppressed = false
+local CameraConnections = {}
+local AcrylicShuttingDown = false
 
-local function RemoveLegacyBlur()
-	local stale = Lighting:FindFirstChild(BLUR_NAME)
-	if stale and stale:IsA("BlurEffect") then stale:Destroy() end
-	BlurEffect = nil
+NullUI.Config = { Blur = true, MaxNotifications = 5 }
+
+local function DisconnectCameraSignals()
+	for i = #CameraConnections, 1, -1 do
+		CameraConnections[i]:Disconnect()
+		CameraConnections[i] = nil
+	end
 end
 
 local function EnsureAcrylicDOF()
-	RemoveLegacyBlur()
 	if AcrylicDOF and AcrylicDOF.Parent then return AcrylicDOF end
-
 	local stale = Lighting:FindFirstChild(ACRYLIC_DOF_NAME)
 	if stale then stale:Destroy() end
 
@@ -173,31 +167,35 @@ local function EnsureAcrylicDOF()
 	return dof
 end
 
-local function SetGlassSunSuppressed(enabled)
-	enabled = enabled and true or false
-	if enabled == SunSuppressed then return end
-	SunSuppressed = enabled
-	if enabled then
-		SavedLightingBrightness = Lighting.Brightness
-		Lighting.Brightness = 0
-	elseif SavedLightingBrightness ~= nil then
-		Lighting.Brightness = SavedLightingBrightness
-		SavedLightingBrightness = nil
+local function RefreshAcrylicEffect()
+	if AcrylicShuttingDown then return end
+	local dof = EnsureAcrylicDOF()
+	dof.Enabled = NullUI.Config.Blur ~= false and #AcrylicControllers > 0
+end
+
+local function UpdateAllAcrylic()
+	for index = #AcrylicControllers, 1, -1 do
+		local controller = AcrylicControllers[index]
+		if controller.Destroyed then
+			table.remove(AcrylicControllers, index)
+		else
+			controller:Update()
+		end
 	end
 end
 
-local function RefreshAcrylicEffect()
-	local dof = EnsureAcrylicDOF()
-	local active = BlurTarget and #AcrylicControllers > 0
-	dof.Enabled = active
-	SetGlassSunSuppressed(active)
-end
+local function BindAcrylicCamera(camera)
+	DisconnectCameraSignals()
+	if not camera then return end
 
-local function IsAcrylicQualityLow()
-	local ok, value = pcall(function()
-		return UserSettings().GameSettings.SavedQualityLevel.Value
-	end)
-	return ok and value > 0 and value < 8
+	local function connect(property)
+		table.insert(CameraConnections,
+			camera:GetPropertyChangedSignal(property):Connect(UpdateAllAcrylic))
+	end
+	connect("CFrame")
+	connect("ViewportSize")
+	connect("FieldOfView")
+	UpdateAllAcrylic()
 end
 
 local function CreateWindowAcrylic(guiObject)
@@ -226,128 +224,110 @@ local function CreateWindowAcrylic(guiObject)
 	mesh.Scale = Vector3.new(1, 1, 0.001)
 	mesh.Parent = part
 
-	local fallback = Instance.new("Frame")
-	fallback.Name = "AcrylicFallback"
-	fallback.BackgroundColor3 = Color3.fromRGB(27, 38, 34)
-	fallback.BackgroundTransparency = 0.88
-	fallback.BorderSizePixel = 0
-	fallback.Size = UDim2.fromScale(1, 1)
-	fallback.ZIndex = 0
-	fallback.Visible = false
-	fallback.Parent = guiObject
-
-	local fallbackCorner = Instance.new("UICorner")
-	fallbackCorner.CornerRadius = UDim.new(0, 16)
-	fallbackCorner.Parent = fallback
-
-	local fallbackGradient = Instance.new("UIGradient")
-	fallbackGradient.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(42, 55, 50)),
-		ColorSequenceKeypoint.new(0.55, Color3.fromRGB(25, 36, 32)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 28, 25)),
-	})
-	fallbackGradient.Rotation = 118
-	fallbackGradient.Parent = fallback
-
 	local controller = {
 		Gui = guiObject,
 		Folder = folder,
 		Part = part,
 		Mesh = mesh,
-		Fallback = fallback,
-		Alpha = 0,
+		Connections = {},
 		Destroyed = false,
 	}
-	table.insert(AcrylicControllers, controller)
-	RefreshAcrylicEffect()
+
+	function controller:Update()
+		if self.Destroyed then return end
+		local camera = workspace.CurrentCamera
+		local gui = self.Gui
+		if not camera or not gui or not gui.Parent then
+			self.Part.Transparency = 1
+			return
+		end
+
+		if self.Folder.Parent ~= camera then
+			self.Folder.Parent = camera
+		end
+
+		local size = gui.AbsoluteSize
+		local visible = NullUI.Config.Blur ~= false
+			and gui.Visible and size.X > 2 and size.Y > 2
+		self.Part.Transparency = visible and ACRYLIC_TRANSPARENCY or 1
+		if not visible then return end
+
+		local edgeInset = math.clamp(camera.ViewportSize.Y * 0.012, 8, 18)
+		local position = gui.AbsolutePosition + Vector2.new(edgeInset, edgeInset)
+		local panelSize = Vector2.new(
+			math.max(1, size.X - edgeInset * 2),
+			math.max(1, size.Y - edgeInset * 2)
+		)
+
+		local function ScreenToWorld(point)
+			local ray = camera:ScreenPointToRay(point.X, point.Y)
+			return ray.Origin + ray.Direction * ACRYLIC_DISTANCE
+		end
+
+		local topLeft3D = ScreenToWorld(position)
+		local topRight3D = ScreenToWorld(position + Vector2.new(panelSize.X, 0))
+		local bottomRight3D = ScreenToWorld(position + panelSize)
+		local width = (topRight3D - topLeft3D).Magnitude
+		local height = (bottomRight3D - topRight3D).Magnitude
+		local renderCFrame = camera:GetRenderCFrame()
+
+		self.Part.CFrame = CFrame.fromMatrix(
+			(topLeft3D + bottomRight3D) / 2,
+			renderCFrame.XVector,
+			renderCFrame.YVector,
+			renderCFrame.ZVector
+		)
+		self.Mesh.Scale = Vector3.new(width, height, 0.001)
+	end
 
 	function controller:Destroy()
 		if self.Destroyed then return end
 		self.Destroyed = true
+		for _, connection in ipairs(self.Connections) do
+			connection:Disconnect()
+		end
+		table.clear(self.Connections)
 		local index = table.find(AcrylicControllers, self)
 		if index then table.remove(AcrylicControllers, index) end
 		if self.Folder then self.Folder:Destroy() end
-		if self.Fallback then self.Fallback:Destroy() end
 		RefreshAcrylicEffect()
 	end
 
+	for _, property in ipairs({ "AbsolutePosition", "AbsoluteSize", "Visible" }) do
+		table.insert(controller.Connections,
+			guiObject:GetPropertyChangedSignal(property):Connect(function()
+				controller:Update()
+			end))
+	end
+	table.insert(controller.Connections, guiObject.AncestryChanged:Connect(function()
+		if not guiObject.Parent then controller:Destroy() end
+	end))
+
+	table.insert(AcrylicControllers, controller)
+	RefreshAcrylicEffect()
+	controller:Update()
 	return controller
 end
 
-LibJanitor:Add(RunService.RenderStepped:Connect(function(deltaTime)
-	local camera = workspace.CurrentCamera
-	local dof = AcrylicDOF
-	if not camera or not dof then return end
-
-	for index = #AcrylicControllers, 1, -1 do
-		local acrylic = AcrylicControllers[index]
-		local gui = acrylic.Gui
-		if acrylic.Destroyed or not gui or not gui.Parent then
-			if not acrylic.Destroyed then acrylic:Destroy() end
-			continue
-		end
-
-		if acrylic.Folder.Parent ~= camera then
-			acrylic.Folder.Parent = camera
-		end
-
-		local size = gui.AbsoluteSize
-		local visible = BlurTarget and gui.Visible and size.X > 2 and size.Y > 2
-		local lowQuality = IsAcrylicQualityLow()
-		if acrylic.Fallback and acrylic.Fallback.Parent then
-			acrylic.Fallback.Visible = visible
-			acrylic.Fallback.BackgroundTransparency = lowQuality and 0.88 or 0.94
-		end
-		local targetAlpha = visible and 1 or 0
-		acrylic.Alpha = acrylic.Alpha + (targetAlpha - acrylic.Alpha)
-			* math.clamp(deltaTime * (targetAlpha > acrylic.Alpha and 9 or 12), 0, 1)
-		acrylic.Part.Transparency = 1 - ((1 - ACRYLIC_TRANSPARENCY) * acrylic.Alpha)
-
-		if acrylic.Alpha > 0.001 then
-			local edgeInset = math.clamp(camera.ViewportSize.Y * 0.012, 8, 18)
-			local position = gui.AbsolutePosition + Vector2.new(edgeInset, edgeInset)
-			local blurSize = Vector2.new(
-				math.max(1, size.X - edgeInset * 2),
-				math.max(1, size.Y - edgeInset * 2)
-			)
-
-			local topLeft3D = camera:ScreenPointToRay(
-				position.X, position.Y, ACRYLIC_DISTANCE
-			).Origin
-			local topRight3D = camera:ScreenPointToRay(
-				position.X + blurSize.X, position.Y, ACRYLIC_DISTANCE
-			).Origin
-			local bottomRight3D = camera:ScreenPointToRay(
-				position.X + blurSize.X, position.Y + blurSize.Y, ACRYLIC_DISTANCE
-			).Origin
-			local width = (topRight3D - topLeft3D).Magnitude
-			local height = (bottomRight3D - topRight3D).Magnitude
-
-			acrylic.Part.CFrame = CFrame.fromMatrix(
-				(topLeft3D + bottomRight3D) / 2,
-				camera.CFrame.XVector,
-				camera.CFrame.YVector,
-				camera.CFrame.ZVector
-			)
-			acrylic.Mesh.Scale = Vector3.new(width, height, 0.001)
-		end
-	end
+BindAcrylicCamera(workspace.CurrentCamera)
+LibJanitor:Add(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	BindAcrylicCamera(workspace.CurrentCamera)
 end))
-
-local function SetBlur(enabled, _duration)
-	BlurTarget = enabled and true or false
-	RefreshAcrylicEffect()
-end
-
-local function UpdateBlur()
-	SetBlur((not NullUI.Config or NullUI.Config.Blur ~= false) and VisibleWindows > 0)
-end
-
-NullUI.Config = { Blur = true, MaxNotifications = 5 }
+LibJanitor:Add(function()
+	DisconnectCameraSignals()
+end)
 
 function NullUI:SetBlurEnabled(enabled)
 	NullUI.Config.Blur = enabled and true or false
-	UpdateBlur()
+	RefreshAcrylicEffect()
+	UpdateAllAcrylic()
+end
+
+local function DestroyAllAcrylicControllers()
+	for index = #AcrylicControllers, 1, -1 do
+		AcrylicControllers[index]:Destroy()
+	end
+	table.clear(AcrylicControllers)
 end
 
 local ASSETS_FOLDER = "NullUI/Assets"
@@ -949,9 +929,6 @@ function NullUI:Notify(opts)
 	local color      = opts.Color or NotifyColors[notifyType] or NullUI.Theme.Accent
 	local iconName   = opts.Icon or NotifyIcons[notifyType] or NotifyIcons.info
 
-	VisibleWindows = VisibleWindows + 1
-	UpdateBlur()
-
 	local holder = GetNotifyHolder()
 	NullUI._NotifyCounter = NullUI._NotifyCounter + 1
 
@@ -971,12 +948,6 @@ function NullUI:Notify(opts)
 	Corner(card, 12)
 	local stroke = Stroke(card, Color3.new(1, 1, 1), 1, 1)
 	local notificationAcrylic = CreateWindowAcrylic(card)
-	if notificationAcrylic.Fallback then
-		notificationAcrylic.Fallback:Destroy()
-		notificationAcrylic.Fallback = nil
-	end
-	UpdateBlur()
-
 	local scale = Instance.new("UIScale")
 	scale.Scale = 0.88
 	scale.Parent = card
@@ -1164,9 +1135,6 @@ function NullUI:Notify(opts)
 	function dismiss()
 		if dismissed or not card.Parent then return end
 		dismissed = true
-
-		VisibleWindows = math.max(0, VisibleWindows - 1)
-		UpdateBlur()
 
 		local currentHeight = card.AbsoluteSize.Y / GetUIScale()
 		card.AutomaticSize = Enum.AutomaticSize.None
@@ -1770,6 +1738,8 @@ local function SetupSmoothDrag(frame, handle, janitor)
 		local left = pos.X - size.X * anchor.X
 		local top  = pos.Y - size.Y * anchor.Y
 		left = SafeClamp(left, -size.X + minVisible, view.X - minVisible)
+		-- A ScreenGui vive abaixo do inset do topo, entao travar em 0 era o teto invisivel
+		-- que impedia arrastar a janela pra cima. -inset.Y libera ate a borda real da tela.
 		top  = SafeClamp(top, -GuiService:GetGuiInset().Y, view.Y - minVisible)
 		return Vector2.new(left + size.X * anchor.X, top + size.Y * anchor.Y)
 	end
@@ -1787,6 +1757,7 @@ local function SetupSmoothDrag(frame, handle, janitor)
 			and input.UserInputType ~= Enum.UserInputType.Touch then
 			return
 		end
+		if dragging then return end
 		dragging = true
 		settling = true
 		activeInput = input
@@ -1811,8 +1782,9 @@ local function SetupSmoothDrag(frame, handle, janitor)
 	end))
 
 	janitor:Add(UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
+		if input == activeInput
+			or (activeInput and activeInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseButton1) then
 			dragging = false
 			activeInput = nil
 		end
@@ -1853,6 +1825,7 @@ local function SetupResize(frame, handle, janitor, opts)
 			and input.UserInputType ~= Enum.UserInputType.Touch then
 			return
 		end
+		if resizing then return end
 		resizing = true
 		activeInput = input
 		startSize = frame.AbsoluteSize
@@ -1890,8 +1863,9 @@ local function SetupResize(frame, handle, janitor, opts)
 
 	janitor:Add(UserInputService.InputEnded:Connect(function(input)
 		if not resizing then return end
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
+		if input == activeInput
+			or (activeInput and activeInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseButton1) then
 			resizing = false
 			activeInput = nil
 			if onResize then onResize(frame.Size, true) end
@@ -2068,6 +2042,9 @@ function NullUI:CreateWindow(opts)
 	local size = opts.Size or UDim2.fromOffset(605, 405)
 
 	if IsMobileDevice then
+		-- The window is laid out in unscaled units (GlobalScale multiplies them), so divide
+		-- the viewport by the scale. This also clamps a Size passed in by the script: a
+		-- desktop sized window comes out cut off on a phone otherwise.
 		local vp = ViewportSize()
 		local s  = GetUIScale()
 		size = UDim2.fromOffset(
@@ -2321,6 +2298,8 @@ function NullUI:CreateWindow(opts)
 
 	if opts.Resizable ~= false then
 		SetupResize(main, resizeHandle, jan, {
+			-- No mobile o minimo nao pode ser maior que a janela ja clampada, senao um
+			-- resize devolve a janela pro tamanho cortado.
 			MinSize = Vector2.new(
 				math.min((opts.MinSize or Vector2.new(420, 300)).X, size.X.Offset),
 				math.min((opts.MinSize or Vector2.new(420, 300)).Y, size.Y.Offset)
@@ -2337,11 +2316,9 @@ function NullUI:CreateWindow(opts)
 		resizeHandle.Visible = false
 	end
 
-	if opts.UseBlur ~= false then
+	if self._useBlur then
 		self._acrylic = CreateWindowAcrylic(main)
 		jan:Add(self._acrylic)
-		VisibleWindows = VisibleWindows + 1
-		UpdateBlur()
 	end
 
 	jan:Add(closeBtn.MouseButton1Click:Connect(function()
@@ -2396,6 +2373,8 @@ function NullUI:CreateWindow(opts)
 		mobileToggle.BackgroundColor3 = Color3.fromRGB(1, 1, 1)
 		mobileToggle.BackgroundTransparency = 1
 		mobileToggle.BorderSizePixel = 0
+		-- Alinhado com a barra do Roblox: a ScreenGui comeca abaixo do inset, entao
+		-- subir inset.Y coloca o botao na mesma faixa das pilulas do topo.
 		local topInset  = GuiService:GetGuiInset().Y
 		local toggleSize = 45
 		local bandY = -(topInset / GetUIScale()) + ((topInset / GetUIScale()) - toggleSize) / 2
@@ -2411,6 +2390,8 @@ function NullUI:CreateWindow(opts)
 		mobileToggleCorner.CornerRadius = UDim.new(1, 0)
 		mobileToggleCorner.Parent = mobileToggle
 
+		-- Draggable is deprecated and swallows touch input (Activated never fires),
+		-- so drive the drag by hand and treat a touch that barely moved as a tap.
 		local DRAG_SLOP = 8
 		local dragInput, dragStart, startPos, dragged
 
@@ -2419,6 +2400,7 @@ function NullUI:CreateWindow(opts)
 				and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
 				return
 			end
+			if dragInput then return end
 			dragInput = input
 			dragStart = input.Position
 			startPos  = mobileToggle.Position
@@ -2476,11 +2458,6 @@ function Window:Destroy()
 
 	CloseAnyOpenPopup()
 
-	if self._state == "open" and self._useBlur then
-		VisibleWindows = math.max(0, VisibleWindows - 1)
-	end
-	UpdateBlur()
-
 	local gui = self._gui
 
 	Tween(gui, {
@@ -2510,11 +2487,6 @@ function Window:Close()
 
 	CloseAnyOpenPopup()
 
-	if self._useBlur then
-		VisibleWindows = math.max(0, VisibleWindows - 1)
-		UpdateBlur()
-	end
-
 	local gui = self._gui
 	self._sizeBeforeMinimize = self._fullscreen
 		and UDim2.new(0.94, 0, 0.9, 0)
@@ -2542,11 +2514,6 @@ function Window:Open()
 
 	local gui = self._gui
 	gui.Visible = true
-
-	if self._useBlur then
-		VisibleWindows = VisibleWindows + 1
-		UpdateBlur()
-	end
 
 	local targetSize = self._sizeBeforeMinimize or self._normalSize
 	Tween(gui, {
@@ -2846,15 +2813,220 @@ function Window:AddPanelTab(opts)
 end
 
 function Window:AddDefaultCreditsPanel()
-	return {
-		Instance = nil,
-		Tab = nil,
-		Open = function() end,
-		Close = function() end,
-		Toggle = function() end,
-		IsOpen = function() return false end,
-		Destroy = function() end,
+	local jan = self._janitor
+	local dockBtn
+	local panel = self:AddPanelTab({
+		Name = "Credits",
+		Icon = "Lucide:heart-handshake",
+		OnToggle = function(isOpen)
+			if dockBtn then dockBtn:SetActive(isOpen) end
+		end,
+	})
+
+	local CREDITS = {
+		{ Name = "Skinny",   Role = "~90% of the UI, and organization of the Touchline script and its functions", Color = Color3.fromRGB(120, 150, 255) },
+		{ Name = "Shezz",    Role = "Sub-tabs, and suggestions for the UI and script", Color = Color3.fromRGB(110, 210, 170) },
+		{ Name = "NoSkills", Role = "Suggestions for the UI, and developer of Touchline script functions", Color = Color3.fromRGB(190, 150, 255) },
+		{ Name = "Luxy_00",  Role = "Mobile UI tester, and developer of Touchline script functions", Color = Color3.fromRGB(255, 190, 110) },
+		{ Name = "Elusive",  Role = "Suggestions for the UI, and main contributor to getting it launched fast", Color = Color3.fromRGB(255, 140, 170) },
 	}
+
+	local HEADER_H = 38
+
+	local header = Instance.new("Frame")
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, 0, 0, HEADER_H)
+	header.ZIndex = Z.Content + 1
+	header.Parent = panel.Instance
+
+	local headerPad = Instance.new("UIPadding")
+	headerPad.PaddingLeft = UDim.new(0, 14)
+	headerPad.PaddingRight = UDim.new(0, 8)
+	headerPad.Parent = header
+
+	local titleRow = Instance.new("Frame")
+	titleRow.BackgroundTransparency = 1
+	titleRow.Size = UDim2.new(1, -40, 1, 0)
+	titleRow.ZIndex = Z.Content + 2
+	titleRow.Parent = header
+
+	local titleLayout = Instance.new("UIListLayout")
+	titleLayout.FillDirection = Enum.FillDirection.Horizontal
+	titleLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	titleLayout.Padding = UDim.new(0, 7)
+	titleLayout.Parent = titleRow
+
+	local titleIcon = Instance.new("ImageLabel")
+	titleIcon.BackgroundTransparency = 1
+	titleIcon.Image = ResolveIcon("heart-handshake")
+	titleIcon.ImageColor3 = NullUI.Theme.Text
+	titleIcon.Size = UDim2.fromOffset(14, 14)
+	titleIcon.LayoutOrder = 1
+	titleIcon.ZIndex = Z.Content + 3
+	titleIcon.Parent = titleRow
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.FontFace = NullUI.Theme.Font
+	titleLabel.Text = "Credits"
+	titleLabel.TextColor3 = NullUI.Theme.Text
+	titleLabel.TextSize = 14
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.AutomaticSize = Enum.AutomaticSize.X
+	titleLabel.Size = UDim2.fromOffset(0, 14)
+	titleLabel.LayoutOrder = 2
+	titleLabel.ZIndex = Z.Content + 3
+	titleLabel.Parent = titleRow
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Text = ""
+	closeBtn.AutoButtonColor = false
+	closeBtn.BackgroundColor3 = Color3.new(1, 1, 1)
+	closeBtn.BackgroundTransparency = 1
+	closeBtn.BorderSizePixel = 0
+	closeBtn.AnchorPoint = Vector2.new(1, 0.5)
+	closeBtn.Position = UDim2.new(1, 0, 0.5, 0)
+	closeBtn.Size = UDim2.fromOffset(26, 26)
+	closeBtn.ZIndex = Z.Content + 2
+	closeBtn.Parent = header
+
+	local closeIcon = Instance.new("ImageLabel")
+	closeIcon.BackgroundTransparency = 1
+	closeIcon.Image = ResolveIcon("x")
+	closeIcon.ImageColor3 = NullUI.Theme.TextDim
+	closeIcon.Size = UDim2.fromOffset(13, 13)
+	closeIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+	closeIcon.Position = UDim2.fromScale(0.5, 0.5)
+	closeIcon.ZIndex = Z.Content + 3
+	closeIcon.Parent = closeBtn
+
+	closeBtn.MouseEnter:Connect(function() closeIcon.ImageColor3 = NullUI.Theme.Text end)
+	closeBtn.MouseLeave:Connect(function() closeIcon.ImageColor3 = NullUI.Theme.TextDim end)
+	closeBtn.MouseButton1Click:Connect(function() panel.Close() end)
+
+	local divider = Instance.new("Frame")
+	divider.BackgroundColor3 = Color3.new(1, 1, 1)
+	divider.BackgroundTransparency = 0.94
+	divider.BorderSizePixel = 0
+	divider.Position = UDim2.fromOffset(0, HEADER_H)
+	divider.Size = UDim2.new(1, 0, 0, 1)
+	divider.ZIndex = Z.Content + 1
+	divider.Parent = panel.Instance
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.BackgroundTransparency = 1
+	scroll.BorderSizePixel = 0
+	scroll.Position = UDim2.fromOffset(0, HEADER_H + 1)
+	scroll.Size = UDim2.new(1, 0, 1, -(HEADER_H + 1))
+	scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+	scroll.ScrollBarThickness = 0
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scroll.ZIndex = Z.Content + 1
+	scroll.Parent = panel.Instance
+
+	local scrollPad = Instance.new("UIPadding")
+	scrollPad.PaddingTop = UDim.new(0, 12)
+	scrollPad.PaddingBottom = UDim.new(0, 12)
+	scrollPad.PaddingLeft = UDim.new(0, 14)
+	scrollPad.PaddingRight = UDim.new(0, 14)
+	scrollPad.Parent = scroll
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 8)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = scroll
+
+	AddScrollbar(scroll)
+	AddContentScrollThumb(scroll, listLayout, panel.Instance, jan)
+
+	for i, credit in ipairs(CREDITS) do
+		local row = Instance.new("Frame")
+		row.Name = credit.Name
+		row.BackgroundColor3 = Color3.new(1, 1, 1)
+		row.BackgroundTransparency = 0.96
+		row.BorderSizePixel = 0
+		row.LayoutOrder = i
+		row.Size = UDim2.new(1, 0, 0, 60)
+		row.ZIndex = Z.Content + 2
+		row.Parent = scroll
+
+		local rowCorner = Instance.new("UICorner")
+		rowCorner.CornerRadius = UDim.new(0, 10)
+		rowCorner.Parent = row
+
+		local rowStroke = Instance.new("UIStroke")
+		rowStroke.Color = Color3.new(1, 1, 1)
+		rowStroke.Transparency = 0.94
+		rowStroke.Thickness = 1
+		rowStroke.Parent = row
+
+		row.MouseEnter:Connect(function() row.BackgroundTransparency = 0.92 end)
+		row.MouseLeave:Connect(function() row.BackgroundTransparency = 0.96 end)
+
+		local avatar = Instance.new("Frame")
+		avatar.AnchorPoint = Vector2.new(0, 0.5)
+		avatar.Position = UDim2.new(0, 12, 0.5, 0)
+		avatar.Size = UDim2.fromOffset(38, 38)
+		avatar.BackgroundColor3 = credit.Color
+		avatar.BackgroundTransparency = 0.82
+		avatar.BorderSizePixel = 0
+		avatar.ZIndex = Z.Content + 2
+		avatar.Parent = row
+
+		local avCorner = Instance.new("UICorner")
+		avCorner.CornerRadius = UDim.new(1, 0)
+		avCorner.Parent = avatar
+
+		local avStroke = Instance.new("UIStroke")
+		avStroke.Color = credit.Color
+		avStroke.Transparency = 0.55
+		avStroke.Thickness = 1
+		avStroke.Parent = avatar
+
+		local avIcon = Instance.new("ImageLabel")
+		avIcon.BackgroundTransparency = 1
+		avIcon.Image = ResolveIcon("user-round")
+		avIcon.ImageColor3 = credit.Color
+		avIcon.Size = UDim2.fromOffset(17, 17)
+		avIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+		avIcon.Position = UDim2.fromScale(0.5, 0.5)
+		avIcon.ZIndex = Z.Content + 3
+		avIcon.Parent = avatar
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.FontFace = NullUI.Theme.Font
+		nameLabel.Text = credit.Name
+		nameLabel.TextColor3 = NullUI.Theme.Text
+		nameLabel.TextSize = 13.5
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.Position = UDim2.fromOffset(62, 8)
+		nameLabel.Size = UDim2.new(1, -74, 0, 16)
+		nameLabel.ZIndex = Z.Content + 2
+		nameLabel.Parent = row
+
+		local roleLabel = Instance.new("TextLabel")
+		roleLabel.BackgroundTransparency = 1
+		roleLabel.FontFace = NullUI.Theme.FontRegular
+		roleLabel.Text = credit.Role
+		roleLabel.TextColor3 = NullUI.Theme.TextDim
+		roleLabel.TextSize = 11.5
+		roleLabel.TextWrapped = true
+		roleLabel.TextXAlignment = Enum.TextXAlignment.Left
+		roleLabel.TextYAlignment = Enum.TextYAlignment.Top
+		roleLabel.Position = UDim2.fromOffset(62, 25)
+		roleLabel.Size = UDim2.new(1, -74, 0, 28)
+		roleLabel.ZIndex = Z.Content + 2
+		roleLabel.Parent = row
+	end
+
+	dockBtn = self:AddDockButton({
+		Icon = "Lucide:heart-handshake",
+		Callback = function() panel.Toggle() end,
+	})
+
+	return panel
 end
 
 function Window:AddSpotifyPanel(opts)
@@ -7359,7 +7531,7 @@ function Tab:AddSubTab(nameOrOpts)
 		self._subTabHolder.BorderSizePixel = 0
 		self._subTabHolder.ScrollingDirection = Enum.ScrollingDirection.X
 		self._subTabHolder.ScrollBarThickness = 0
-		self._subTabHolder.AutomaticCanvasSize = Enum.AutomaticSize.None
+		self._subTabHolder.AutomaticCanvasSize = Enum.AutomaticSize.X
 		self._subTabHolder.CanvasSize = UDim2.new(0, 0, 0, 40)
 		self._subTabHolder.ZIndex = Z.Content
 		self._subTabHolder.Parent = page
@@ -7391,23 +7563,6 @@ function Tab:AddSubTab(nameOrOpts)
 		sl.Padding = UDim.new(0, 6)
 		sl.SortOrder = Enum.SortOrder.LayoutOrder
 		sl.Parent = self._subTabHolder
-
-		function self._updateSubTabCanvas()
-			local holder = self._subTabHolder
-			if not holder then return end
-			local contentWidth = math.max(0, sl.AbsoluteContentSize.X + 14)
-			holder.CanvasSize = UDim2.fromOffset(contentWidth, 40)
-			local maxCanvasX = math.max(0, contentWidth - holder.AbsoluteWindowSize.X)
-			if holder.CanvasPosition.X > maxCanvasX then
-				holder.CanvasPosition = Vector2.new(maxCanvasX, 0)
-			end
-		end
-
-		jan:Add(sl:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-			self._updateSubTabCanvas()
-			self._updateSubTabScrollbar()
-		end))
-		task.defer(self._updateSubTabCanvas)
 
 		self._subTabBody = Instance.new("Frame")
 		self._subTabBody.Name = "SubTabBody"
@@ -7450,7 +7605,7 @@ function Tab:AddSubTab(nameOrOpts)
 				return
 			end
 			local windowW = holder.AbsoluteSize.X
-			local canvasW = holder.AbsoluteCanvasSize.X
+			local canvasW = sl.AbsoluteContentSize.X
 			local overflow = canvasW - windowW
 			if overflow <= 1 or windowW <= 0 then
 				track.Visible = false
@@ -7603,9 +7758,6 @@ function Tab:AddSubTab(nameOrOpts)
 	}, Tab)
 
 	self._subTabs[idx] = sub
-	task.defer(function()
-		if self._updateSubTabCanvas then self._updateSubTabCanvas() end
-	end)
 
 	jan:Add(btn:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
 		if self.SelectedSubTab == idx then
@@ -7672,23 +7824,6 @@ function Tab:SelectSubTab(idx)
 	if not target then return end
 
 	self._syncSubIndicator(previous ~= nil)
-	task.defer(function()
-		local holder = self._subTabHolder
-		if not holder or not target.Button.Parent then return end
-		if self._updateSubTabCanvas then self._updateSubTabCanvas() end
-		local left = target.Button.AbsolutePosition.X - holder.AbsolutePosition.X
-		local right = left + target.Button.AbsoluteSize.X
-		local viewportWidth = holder.AbsoluteWindowSize.X
-		local nextX = holder.CanvasPosition.X
-		if left < 6 then
-			nextX = nextX + left - 6
-		elseif right > viewportWidth - 6 then
-			nextX = nextX + right - viewportWidth + 6
-		end
-		local maxX = math.max(0, holder.AbsoluteCanvasSize.X - viewportWidth)
-		holder.CanvasPosition = Vector2.new(math.clamp(nextX, 0, maxX), 0)
-		self._syncSubIndicator(false)
-	end)
 
 	for i, st in pairs(self._subTabs) do
 		local sel = (i == idx)
@@ -9099,14 +9234,12 @@ function Tab:AddInfoGrid(opts)
 		leftInset = 6
 	end
 
-	local body = Instance.new("Frame")
-	body.Name = "Content"
-	body.BackgroundTransparency = 1
-	body.BorderSizePixel = 0
-	body.Position = UDim2.fromOffset(PAD + leftInset, PAD)
-	body.Size = UDim2.new(1, -(PAD * 2 + leftInset), 1, -PAD * 2)
-	body.ZIndex = Z.Content + 1
-	body.Parent = card
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, PAD)
+	pad.PaddingBottom = UDim.new(0, PAD)
+	pad.PaddingLeft = UDim.new(0, PAD + leftInset)
+	pad.PaddingRight = UDim.new(0, PAD)
+	pad.Parent = card
 
 	local titleLabel = Instance.new("TextLabel")
 	titleLabel.BackgroundTransparency = 1
@@ -9119,7 +9252,7 @@ function Tab:AddInfoGrid(opts)
 	titleLabel.Position = UDim2.fromOffset(0, 0)
 	titleLabel.Size = UDim2.new(1, 0, 0, 16)
 	titleLabel.ZIndex = Z.Content + 1
-	titleLabel.Parent = body
+	titleLabel.Parent = card
 
 	if hasDesc then
 		local descLabel = Instance.new("TextLabel")
@@ -9128,14 +9261,13 @@ function Tab:AddInfoGrid(opts)
 		descLabel.Text = opts.Description
 		descLabel.TextColor3 = NullUI.Theme.TextDim
 		descLabel.TextSize = 12
-		descLabel.TextWrapped = false
-		descLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		descLabel.TextWrapped = true
 		descLabel.TextXAlignment = Enum.TextXAlignment.Left
 		descLabel.TextYAlignment = Enum.TextYAlignment.Top
 		descLabel.Position = UDim2.fromOffset(0, 18)
 		descLabel.Size = UDim2.new(1, 0, 0, 14)
 		descLabel.ZIndex = Z.Content + 1
-		descLabel.Parent = body
+		descLabel.Parent = card
 	end
 
 	local chipValues = {}
@@ -9147,7 +9279,7 @@ function Tab:AddInfoGrid(opts)
 		grid.Position = UDim2.fromOffset(0, HEADER_H + 10)
 		grid.Size = UDim2.new(1, 0, 0, gridH)
 		grid.ZIndex = Z.Content + 1
-		grid.Parent = body
+		grid.Parent = card
 
 		local gridLayout = Instance.new("UIGridLayout")
 		gridLayout.CellPadding = UDim2.fromOffset(GRID_GAP, GRID_GAP)
@@ -9177,7 +9309,6 @@ function Tab:AddInfoGrid(opts)
 
 			local chipPad = Instance.new("UIPadding")
 			chipPad.PaddingTop = UDim.new(0, 6)
-			chipPad.PaddingBottom = UDim.new(0, 5)
 			chipPad.PaddingLeft = UDim.new(0, 8)
 			chipPad.PaddingRight = UDim.new(0, 8)
 			chipPad.Parent = chip
@@ -9795,6 +9926,8 @@ function Tab:AddToggle(opts)
 	switchBg.Parent = card
 	Corner(switchBg, 11)
 
+	-- The disabled state stays translucent so the window background remains visible
+	-- through the control instead of turning into a flat gray pill.
 	local switchStroke = Stroke(
 		switchBg,
 		state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(205, 212, 209),
@@ -9980,6 +10113,8 @@ function Tab:AddSlider(opts)
 	local track = Instance.new("Frame")
 	track.Position = UDim2.new(0, 14, 1, -20)
 	track.Size = UDim2.new(1, -28, 0, 6)
+	-- Nearly transparent white overlay: no gray tint, so the window background
+	-- remains visible through the unfilled portion of the slider.
 	track.BackgroundColor3 = Color3.new(1, 1, 1)
 	track.BackgroundTransparency = 0.91
 	track.BorderSizePixel = 0
@@ -10054,6 +10189,7 @@ function Tab:AddSlider(opts)
 	end
 
 	local dragging = false
+	local sliderInput = nil
 	local followConn = nil
 
 	local function updateFromX(xPos)
@@ -10093,7 +10229,9 @@ function Tab:AddSlider(opts)
 			and input.UserInputType ~= Enum.UserInputType.Touch then
 			return
 		end
+		if dragging then return end
 		dragging = true
+		sliderInput = input
 		updateFromX(input.Position.X)
 
 		stopFollow()
@@ -10111,19 +10249,22 @@ function Tab:AddSlider(opts)
 
 	jan:Add(UserInputService.InputChanged:Connect(function(input)
 		if not dragging then return end
-		if input.UserInputType == Enum.UserInputType.MouseMovement
-			or input.UserInputType == Enum.UserInputType.Touch then
+		if input == sliderInput
+			or (sliderInput and sliderInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseMovement) then
 			updateFromX(input.Position.X)
 		end
 	end))
 
 	jan:Add(UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType ~= Enum.UserInputType.MouseButton1
-			and input.UserInputType ~= Enum.UserInputType.Touch then
+		if not dragging then return end
+		if input ~= sliderInput
+			and not (sliderInput and sliderInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseButton1) then
 			return
 		end
-		if not dragging then return end
 		dragging = false
+		sliderInput = nil
 		stopFollow()
 		targetAlpha = SafeAlpha(value, min, max)
 		visualAlpha = targetAlpha
@@ -10731,6 +10872,7 @@ function Tab:AddColorPicker(opts)
 	local hexBox, rBox, gBox, bBox
 	local originalHue, originalSat, originalVal
 	local draggingSV, draggingHue = false, false
+	local colorInput = nil
 	local dragEndedAt = 0
 
 	local function currentColor()
@@ -10782,6 +10924,7 @@ function Tab:AddColorPicker(opts)
 		if not popupOpen then return end
 		popupOpen = false
 		draggingSV, draggingHue = false, false
+		colorInput = nil
 		RegisterPopupClose(closePopup)
 		Tween(swatchStroke, { Color = Color3.new(1, 1, 1), Transparency = 0.85 }, 0.15)
 
@@ -10817,8 +10960,9 @@ function Tab:AddColorPicker(opts)
 
 	jan:Add(UserInputService.InputChanged:Connect(function(input)
 		if not popupFrame then return end
-		if input.UserInputType ~= Enum.UserInputType.MouseMovement
-			and input.UserInputType ~= Enum.UserInputType.Touch then
+		if input ~= colorInput
+			and not (colorInput and colorInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseMovement) then
 			return
 		end
 		if draggingSV then updateSV(input.Position) end
@@ -10826,12 +10970,14 @@ function Tab:AddColorPicker(opts)
 	end))
 
 	jan:Add(UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
+		if input == colorInput
+			or (colorInput and colorInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseButton1) then
 			if draggingSV or draggingHue then
 				dragEndedAt = os.clock()
 			end
 			draggingSV, draggingHue = false, false
+			colorInput = nil
 		end
 	end))
 
@@ -11051,7 +11197,9 @@ function Tab:AddColorPicker(opts)
 		svBox.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1
 				or input.UserInputType == Enum.UserInputType.Touch then
+				if draggingSV or draggingHue then return end
 				draggingSV = true
+				colorInput = input
 				updateSV(input.Position)
 			end
 		end)
@@ -11059,7 +11207,9 @@ function Tab:AddColorPicker(opts)
 		hueBar.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseButton1
 				or input.UserInputType == Enum.UserInputType.Touch then
+				if draggingSV or draggingHue then return end
 				draggingHue = true
+				colorInput = input
 				updateHue(input.Position)
 			end
 		end)
@@ -11590,7 +11740,7 @@ function Tab:AddTable(opts)
 	local title = opts.Title or "Table"
 	local hasDesc = opts.Description and opts.Description ~= ""
 	local columns = opts.Columns or {}
-	local rowHeight = opts.RowHeight or 34
+	local rowHeight = opts.RowHeight or 30
 	local bodyHeight = opts.Height or 200
 	local sortable = opts.Sortable ~= false
 	local striped = opts.Striped ~= false
@@ -11666,14 +11816,11 @@ function Tab:AddTable(opts)
 
 	local colHead = Instance.new("Frame")
 	colHead.Name = "ColumnHeader"
-	colHead.BackgroundColor3 = Color3.new(1, 1, 1)
-	colHead.BackgroundTransparency = 0.965
-	colHead.BorderSizePixel = 0
+	colHead.BackgroundTransparency = 1
 	colHead.Position = UDim2.fromOffset(PAD, colHeadY)
 	colHead.Size = UDim2.new(1, -PAD * 2, 0, COLHEAD_H)
 	colHead.ZIndex = Z.Content + 1
 	colHead.Parent = container
-	Corner(colHead, 7)
 
 	local sortState = { Key = nil, Asc = true }
 	local headerLabels = {}
@@ -11691,11 +11838,6 @@ function Tab:AddTable(opts)
 		cellBtn.Size = UDim2.new(wFrac, ci > 1 and -4 or 0, 1, 0)
 		cellBtn.ZIndex = Z.Content + 2
 		cellBtn.Parent = colHead
-
-		local headerPad = Instance.new("UIPadding")
-		headerPad.PaddingLeft = UDim.new(0, 8)
-		headerPad.PaddingRight = UDim.new(0, 8)
-		headerPad.Parent = cellBtn
 
 		local lbl = Instance.new("TextLabel")
 		lbl.BackgroundTransparency = 1
@@ -11725,8 +11867,8 @@ function Tab:AddTable(opts)
 	divider.BackgroundColor3 = Color3.new(1, 1, 1)
 	divider.BackgroundTransparency = 0.92
 	divider.BorderSizePixel = 0
-	divider.Position = UDim2.fromOffset(PAD, colHeadY + COLHEAD_H + 3)
-	divider.Size = UDim2.new(1, -PAD * 2, 0, 1)
+	divider.Position = UDim2.fromOffset(0, colHeadY + COLHEAD_H)
+	divider.Size = UDim2.new(1, 0, 0, 1)
 	divider.ZIndex = Z.Content + 1
 	divider.Parent = container
 
@@ -11746,12 +11888,9 @@ function Tab:AddTable(opts)
 	local scrollPad = Instance.new("UIPadding")
 	scrollPad.PaddingLeft = UDim.new(0, PAD)
 	scrollPad.PaddingRight = UDim.new(0, PAD)
-	scrollPad.PaddingTop = UDim.new(0, 2)
-	scrollPad.PaddingBottom = UDim.new(0, 4)
 	scrollPad.Parent = scroll
 
 	local rowsLayout = Instance.new("UIListLayout")
-	rowsLayout.Padding = UDim.new(0, 4)
 	rowsLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	rowsLayout.Parent = scroll
 
@@ -11785,25 +11924,12 @@ function Tab:AddTable(opts)
 			local rowFrame = Instance.new("Frame")
 			rowFrame.Name = "Row" .. ri
 			rowFrame.BackgroundColor3 = Color3.new(1, 1, 1)
-			rowFrame.BackgroundTransparency = (striped and ri % 2 == 0) and 0.945 or 0.975
+			rowFrame.BackgroundTransparency = (striped and ri % 2 == 0) and 0.97 or 1
 			rowFrame.BorderSizePixel = 0
 			rowFrame.LayoutOrder = ri
 			rowFrame.Size = UDim2.new(1, 0, 0, rowHeight)
 			rowFrame.ZIndex = Z.Content + 2
 			rowFrame.Parent = scroll
-			Corner(rowFrame, 6)
-			local rowStroke = Stroke(rowFrame, Color3.new(1, 1, 1), 1, 0.965)
-
-			rowFrame.MouseEnter:Connect(function()
-				Tween(rowFrame, { BackgroundTransparency = 0.91 }, 0.12)
-				Tween(rowStroke, { Transparency = 0.9 }, 0.12)
-			end)
-			rowFrame.MouseLeave:Connect(function()
-				Tween(rowFrame, {
-					BackgroundTransparency = (striped and ri % 2 == 0) and 0.945 or 0.975,
-				}, 0.12)
-				Tween(rowStroke, { Transparency = 0.965 }, 0.12)
-			end)
 
 			for ci, col in ipairs(columns) do
 				local x0 = colX(ci)
@@ -11812,7 +11938,7 @@ function Tab:AddTable(opts)
 				local cell = Instance.new("TextLabel")
 				cell.Name = "Cell" .. ci
 				cell.BackgroundTransparency = 1
-				cell.FontFace = (ci == 1 or col.Emphasized) and NullUI.Theme.Font or NullUI.Theme.FontRegular
+				cell.FontFace = NullUI.Theme.FontRegular
 				cell.Text = tostring(row[col.Key] == nil and "" or row[col.Key])
 				cell.TextColor3 = NullUI.Theme.Text
 				cell.TextSize = 12
@@ -11822,11 +11948,6 @@ function Tab:AddTable(opts)
 				cell.Size = UDim2.new(wFrac, ci > 1 and -4 or 0, 1, 0)
 				cell.ZIndex = Z.Content + 3
 				cell.Parent = rowFrame
-
-				local cellPad = Instance.new("UIPadding")
-				cellPad.PaddingLeft = UDim.new(0, 8)
-				cellPad.PaddingRight = UDim.new(0, 8)
-				cellPad.Parent = cell
 			end
 
 			table.insert(rowFrames, rowFrame)
@@ -12082,9 +12203,10 @@ function Tab:AddCardGrid(opts)
 	gridScroll.ZIndex = Z.Content + 1
 	gridScroll.Parent = content
 
+	-- Reserve room for the visible scrollbar so cards never sit underneath it.
 	local GRID_RIGHT_PAD = gridScroll.ScrollBarThickness > 0 and (gridScroll.ScrollBarThickness + 6) or 0
 	local GRID_TOP_PAD = 8
-	local GRID_BOTTOM_PAD = 10
+	local GRID_BOTTOM_PAD = 48
 	local gridPad = Instance.new("UIPadding")
 	gridPad.PaddingTop = UDim.new(0, GRID_TOP_PAD)
 	gridPad.PaddingRight = UDim.new(0, GRID_RIGHT_PAD)
@@ -12680,7 +12802,6 @@ function Tab:AddCardGrid(opts)
 		loadToken = loadToken + 1
 		local myToken = loadToken
 		clearGrid()
-		gridScroll.CanvasPosition = Vector2.new(0, 0)
 		setStatus(opts.LoadingText or "Loading...", "loading")
 		resizeOuterEmpty()
 		task.spawn(function()
@@ -13410,30 +13531,19 @@ local function DestroyAllWindowJanitors()
 end
 
 NullUI._Root.Destroying:Connect(function()
-	VisibleWindows = 0
+	AcrylicShuttingDown = true
 	DestroyAllWindowJanitors()
-	SetBlur(false, 0.2)
-	task.delay(0.3, function()
-		if BlurEffect then
-			BlurEffect:Destroy()
-			BlurEffect = nil
-			BlurTarget = nil
-		end
-	end)
+	DestroyAllAcrylicControllers()
 	LibJanitor:Destroy()
 end)
 
 function NullUI:Unload()
 	CloseAnyOpenPopup()
-	VisibleWindows = 0
+	AcrylicShuttingDown = true
 	DestroyAllWindowJanitors()
+	DestroyAllAcrylicControllers()
 	LibJanitor:Destroy()
 	if NullUI._Root then NullUI._Root:Destroy() end
-	if BlurEffect then
-		BlurEffect:Destroy()
-		BlurEffect = nil
-		BlurTarget = nil
-	end
 end
 
 do
@@ -13444,4 +13554,3 @@ do
 end
 
 return NullUI
-
